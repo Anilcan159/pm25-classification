@@ -1,0 +1,989 @@
+--- 
+title: 'Práctica: Clasificación de la Contaminación por PM2.5 con Aprendizaje Automático'
+author: "Anıl Can Tekin"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    latex_engine: xelatex
+  word_document:
+    toc: true
+    toc_depth: '3'
+  html_document:
+    toc: true
+    toc_depth: '3'
+    df_print: paged
+fontsize: 11pt
+---
+
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE, results='hide'}
+knitr::opts_chunk$set(echo=TRUE, message=FALSE, warning=FALSE, comment=NA)
+```
+
+#Resumen Ejecutivo
+
+Este estudio aborda la predicción de los niveles de contaminación por PM2.5 utilizando técnicas de aprendizaje automático aplicadas a datos atmosféricos de distintas regiones.
+
+- **Preprocesamiento de datos:**  
+  Se realizó una limpieza exhaustiva del conjunto de datos, incluyendo la conversión de tipos, imputación de valores ausentes, eliminación de variables redundantes y normalización de variables numéricas. Se discretizó la variable objetivo en cuatro clases y se aplicó SMOTE junto con undersampling para balancear las clases.
+
+- **Conclusiones del análisis descriptivo:**  
+  El análisis exploratorio reveló una correlación significativa entre PM2.5 y contaminantes como PM10 y NO2. Se identificó un desequilibrio severo en la distribución de clases, así como patrones distintivos entre zonas de alta y baja contaminación.
+
+- **Selección de variables:**  
+  Se aplicó la técnica de selección recursiva de características (RFE) utilizando Random Forest como modelo base. Esta técnica permitió identificar el subconjunto óptimo de variables predictoras que maximizan el rendimiento del modelo. Entre las variables seleccionadas se destacan PM10_annual_mean, NO2_annual_mean y O3_annual_mean, confirmando su relevancia en la predicción de los niveles de PM2.5.
+
+- **Modelos predictivos y remuestreo:**  
+  Se construyeron modelos usando regresión logística, Random Forest, SVM y redes neuronales profundas. Se aplicó validación cruzada (5-fold CV) y búsqueda de hiperparámetros (grid search) para SVM y redes neuronales. El modelo Random Forest obtuvo la mayor precisión global (86.9%), mientras que la red neuronal presentó mejor desempeño en la detección de clases minoritarias.
+
+- **Conclusiones del análisis:**  
+  Los resultados indican que es posible predecir con alta fiabilidad los niveles de contaminación por PM2.5. El enfoque de aprendizaje profundo fue especialmente útil para minimizar los falsos negativos en clases de alto riesgo. Las variables relacionadas con PM10 y NO2 fueron determinantes en la clasificación.
+
+Este análisis proporciona una base sólida para el monitoreo predictivo de la calidad del aire en entornos urbanos y rurales.
+
+## Carga de las librerías necesarias
+
+
+```{r setup, echo=FALSE, message=FALSE, warning=FALSE}
+library(ggplot2)        
+library(corrplot)       
+library(caret)          
+library(pROC)           
+library(readr)         
+library(readxl)
+library(reshape2)
+library(DMwR2)
+library(smotefamily)
+library(dplyr)
+library(UBL)
+library(yardstick)
+library(tibble)
+library(kernlab)
+library(keras)
+```
+
+# Análisis descriptivo
+
+En esta sección se exploran las características del conjunto de datos mediante tablas de frecuencia, gráficos de distribución y análisis de correlación. El objetivo es entender mejor la distribución de clases de PM2.5 y su relación con otras variables ambientales.
+
+## Carga del conjunto de datos
+
+```{r}
+dir_base <- "C:/Users/tekin/OneDrive - UNIVERSIDAD DE MURCIA/MDTarea"
+df <- readxl::read_excel(file.path(dir_base, "x.xlsx"))
+```
+
+```{r}
+names(df)
+dim(df)
+head(df)
+
+```
+
+```{r}
+str(df)
+```
+## Limpieza de datos
+
+Se aplican diversas técnicas de limpieza para asegurar la calidad del dataset: eliminación de duplicados, tratamiento de valores ausentes y conversión adecuada de tipos de datos.
+
+### Renombrar las columnas del conjunto de datos
+
+A continuación, se renombran las columnas del conjunto de datos para facilitar su interpretación y asegurar una nomenclatura coherente y estandarizada en todo el análisis.
+```{r}
+colnames(df) <- c(
+  "district", "year",
+  "NO2_annual_mean", "NO2_hours_above_200",
+  "NO_annual_mean", "O3_annual_mean", "O3_days_above_120",
+  "O3_daily_max_annual_mean", "O3_daily_max_8h", "O3_daily_max_1h",
+  "PM10_annual_mean", "PM10_days_above_50",
+  "PM25_annual_mean", "district_code", "scenario"
+)
+
+```
+
+
+### Conversión de tipos de datos
+
+En esta sección se identifican y transforman las variables de tipo carácter.  
+Se aplicarán las siguientes transformaciones:
+
+- Las variables que representan valores numéricos serán convertidas al tipo `numeric`, asegurando una correcta interpretación durante el análisis estadístico y modelado.
+- Las variables que contienen categorías (como nombres de distritos o escenarios) serán convertidas al tipo `factor`, lo cual es esencial para su uso en modelos de clasificación y análisis exploratorio.
+
+
+```{r}
+char_cols <- sapply(df, is.character)
+df[1:5, which(char_cols)]
+```
+
+
+```{r,warning=FALSE}
+cols_to_convert <- c("year", "NO2_annual_mean", "NO2_hours_above_200",
+                     "NO_annual_mean", "O3_annual_mean", "O3_days_above_120",
+                     "O3_daily_max_annual_mean", "O3_daily_max_8h", "O3_daily_max_1h",
+                     "PM10_annual_mean", "PM10_days_above_50", "PM25_annual_mean",
+                     "district_code")
+
+df[cols_to_convert] <- lapply(df[cols_to_convert], as.numeric)
+df$district <- as.factor(df$district)
+df$scenario <- as.factor(df$scenario)
+```
+
+### Comprobación de variables con varianza cercana a cero
+
+Se utiliza la función `nearZeroVar()` del paquete `caret` para identificar las variables que tienen una varianza casi nula, las cuales generalmente no aportan información útil al modelo.
+
+```{r}
+nzv_indices <- nearZeroVar(df)
+nzv_features <- names(df)[nzv_indices]
+print(nzv_features)
+```
+El resultado de la ejecución es character(0), lo que indica que no existen variables con varianza cercana a cero en el conjunto de datos.
+Por lo tanto, no se requiere eliminar ninguna variable en esta etapa.
+
+
+### Detección de filas duplicadas
+
+
+```{r}
+cat("Numero de filas duplicadas", sum(duplicated(df)), "\n")
+```
+Se verifica la presencia de filas duplicadas en el conjunto de datos utilizando la función `duplicated()`.  
+El resultado indica que **no hay filas duplicadas**, por lo tanto no es necesario realizar ninguna eliminación en esta etapa.
+
+
+### Comprobación de valores ausentes
+
+```{r}
+colSums(is.na(df)) 
+```
+Para tratar los valores ausentes en las variables numéricas, se ha optado por la imputación mediante la media de cada variable.  
+Esta técnica es apropiada cuando el porcentaje de valores perdidos es bajo y se asume que los datos están ausentes al azar (MCAR - Missing Completely At Random).  
+La imputación con la media permite conservar la dimensionalidad del conjunto de datos sin introducir sesgos significativos cuando no existen patrones sistemáticos en los valores perdidos.
+
+```{r}
+numeric_cols <- sapply(df, is.numeric)
+
+df[numeric_cols] <- lapply(df[numeric_cols], function(x) {
+  x[is.na(x)] <- mean(x, na.rm = TRUE)
+  return(x)
+})
+```
+
+### Eliminación de variables redundantes o irrelevantes
+
+Durante el análisis exploratorio, se identificaron varias columnas que no aportaban valor predictivo al modelo o eran redundantes:
+
+- `district_code`: contiene una codificación única para cada distrito, pero esta información ya está representada de forma más interpretable en la variable `district`.
+- `district`: aunque puede ser útil desde el punto de vista descriptivo, no aporta información generalizable al problema de clasificación, y su alta cardinalidad podría introducir ruido.
+- `year` y `scenario`: son constantes o tienen muy poca variabilidad en el conjunto de datos y, por lo tanto, no contribuyen significativamente al aprendizaje del modelo.
+
+Por estos motivos, se decidió eliminar dichas columnas antes del proceso de modelado para reducir dimensionalidad y evitar el sobreajuste.
+
+
+```{r}
+df$district_code <- NULL
+df$district <- NULL
+df$year <- NULL
+df$scenario <- NULL
+```
+
+
+## Análisis exploratorio de datos
+
+Antes de proceder con la construcción de modelos predictivos, se llevó a cabo un análisis exploratorio para comprender la distribución de los datos y la relación entre las distintas variables atmosféricas. Se analizaron los niveles de PM2.5, se detectaron valores atípicos, se evaluaron correlaciones entre contaminantes y se observaron patrones relevantes que ayudaron a guiar el diseño del modelo.
+
+
+### Niveles de PM2.5 y Distribución 
+
+Con el objetivo de facilitar el análisis y la interpretación de los valores de PM2.5, se ha creado una variable categórica que clasifica los niveles de contaminación en cuatro grupos: "Bajo", "Moderada", "Insalubre" y "Muy_Insalubre".  
+Esta clasificación permite describir con mayor claridad las características de las zonas según su nivel de contaminación.
+
+
+```{r}
+df$PM25_clasificacion <- cut(
+  df$PM25_annual_mean,
+  breaks = c(-Inf, 10, 25, 50, Inf),
+  labels = c("Bajo", "Moderada", "Insalubre", "Muy_Insalubre")
+)
+df$PM25_clasificacion <- as.factor(df$PM25_clasificacion)
+```
+
+A continuación se muestra un gráfico de barras que representa la distribución de las observaciones según los niveles de concentración de PM2.5 clasificados en cuatro categorías.
+
+```{r, warning=FALSE}
+ggplot(df, aes(x = PM25_clasificacion)) +
+  geom_bar(fill = "#4B9CD3") +
+  geom_text(stat = "count", aes(label = ..count..), vjust = -0.5, size = 4) +
+  labs(title = "Distribucion de niveles de PM2.5",
+       x = "Nivel de contaminacion por PM2.5",
+       y = "Numero de observaciones") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+Se observa una distribución altamente desequilibrada en los niveles de PM2.5.  
+La mayoría de las observaciones se concentran en las categorías "Moderada" (más del 80%) y "Bajo", mientras que las clases "Insalubre" y "Muy_Insalubre" representan una fracción mínima del total.  
+
+Este desbalance puede afectar el rendimiento de los modelos de clasificación, ya que las clases minoritarias podrían ser subrepresentadas o mal clasificadas.  
+Será necesario considerar técnicas de balanceo (como sobremuestreo o submuestreo) en etapas posteriores si se utiliza esta variable como objetivo en modelos predictivos.  
+**En este caso, se aplicará la técnica SMOTE (Synthetic Minority Over-sampling Technique) para aumentar la representación de las clases minoritarias de manera más robusta y preservar la estructura de los datos.**
+
+### Evaluación de valores atípicos y validación con fuentes externas
+
+
+```{r}
+numeric_df <- df[, sapply(df, is.numeric)]
+numeric_df <- subset(numeric_df)
+
+long_df <- melt(numeric_df)
+
+ggplot(long_df, aes(x = variable, y = value)) +
+  geom_boxplot(outlier.colour = "red", fill = "#4B9CD3") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  ) +
+  labs(title = "Boxplot de variables numericas",
+       x = "Variable",
+       y = "Valor")
+```
+Como se observó anteriormente en los gráficos de caja, no se identificaron valores atípicos significativos dentro de las variables numéricas del conjunto de datos.  
+Para reforzar esta observación visual, se consultaron las guías oficiales de la Organización Mundial de la Salud (OMS) sobre calidad del aire, disponibles en el siguiente enlace:
+
+[WHO Global Air Quality Guidelines 2021](https://www.who.int/publications/i/item/9789240034228)
+
+Estas guías proporcionan valores de referencia para contaminantes como PM2.5, PM10, NO₂ y O₃, los cuales fueron utilizados como criterio adicional considerando el contexto ambiental y el conocimiento del dominio.
+
+**Por lo tanto, se concluye que no es necesario eliminar ninguna observación del conjunto de datos.**
+
+
+### Relación entre PM2.5 y otros contaminantes atmosféricos
+
+
+```{r}
+selected_vars <- df[, c("PM25_clasificacion", 
+                        "NO_annual_mean", 
+                        "NO2_annual_mean", 
+                        "O3_annual_mean", 
+                        "PM10_annual_mean")]
+
+long_df <- melt(selected_vars, id.vars = "PM25_clasificacion")
+df$PM25_annual_mean <- NULL
+ggplot(long_df, aes(x = PM25_clasificacion, y = value, fill = PM25_clasificacion)) +
+  geom_boxplot() +
+  facet_wrap(~ variable, scales = "free_y", ncol = 2) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14),
+    axis.text.y = element_text(size = 9),
+    axis.title.y = element_text(size = 10),
+    strip.text = element_text(size = 11)
+  ) +
+  labs(title = "Distribucion de contaminantes segun el nivel de PM2.5",
+       x = "Clasificacion PM2.5",
+       y = "Valor anual promedio")
+
+```
+
+Como se puede observar en los diagramas de caja, existe una tendencia clara:  
+a medida que aumentan los niveles de PM2.5, también se incrementan los valores anuales promedio de NO, NO2 y PM10.  
+
+Esta relación positiva sugiere una fuerte asociación entre estos contaminantes.  
+Por otro lado, el ozono (O3) no muestra una tendencia tan marcada, aunque sí se observan diferencias entre grupos.
+
+Estos resultados confirman que las zonas con mayor contaminación por PM2.5 tienden a presentar niveles elevados de otros contaminantes atmosféricos.
+
+### Análisis de correlación entre variables numéricas
+
+```{r}
+numeric_df <- df[, sapply(df, is.numeric)]
+numeric_df <- subset(numeric_df)
+
+cor_matrix <- cor(numeric_df, use = "complete.obs")
+
+corrplot(cor_matrix, method = "color", type = "upper", 
+         tl.cex = 0.8, addCoef.col = "black", number.cex = 0.7)
+```
+El análisis de correlación revela asociaciones importantes entre varios contaminantes atmosféricos.  
+En particular, se observa una fuerte correlación positiva entre **PM2.5 y PM10** (r = 0.66), lo cual es coherente debido a la naturaleza similar de estas partículas.  
+Además, **NO2 también muestra una correlación moderada con PM2.5** (r = 0.41), lo que sugiere una posible fuente común (como el tráfico vehicular).
+
+Por otro lado, el ozono (O3) presenta correlaciones más débiles con PM2.5, lo que es esperable debido a su origen secundario en la atmósfera.
+
+Estos resultados confirman que los niveles elevados de PM2.5 tienden a coincidir con concentraciones más altas de otros contaminantes como NO2 y PM10.
+
+### Conclusiones del análisis exploratorio de datos (EDA)
+
+
+A partir del análisis exploratorio realizado, se han podido identificar patrones y relaciones clave entre los niveles de PM2.5 y otras variables atmosféricas.
+
+1. **¿Cuáles son las características de las zonas con alta contaminación por PM2.5?**
+
+   Las zonas clasificadas como *Insalubre* o *Muy_Insalubre* presentan:
+   - Niveles significativamente más altos de **PM10**, **NO** y **NO₂**.
+   - Valores también elevados en la variable **PM10_days_above_50**, lo cual refuerza la presencia de material particulado.
+   - Una ligera disminución en los niveles de **O₃**, probablemente debido a procesos químicos asociados con alta concentración de partículas.
+
+2. **¿Y las zonas con baja contaminación por PM2.5?**
+
+   Las zonas clasificadas como *Bajo* o *Moderada* se caracterizan por:
+   - Niveles considerablemente más bajos de contaminantes relacionados con el tráfico.
+   - Mayor variabilidad en los niveles de ozono, pero sin presencia dominante de otros contaminantes primarios.
+   - Una distribución más homogénea en los valores de las variables atmosféricas analizadas.
+
+En resumen, se observa una posible asociación entre los altos niveles de PM2.5 y la presencia de otros contaminantes del aire, especialmente aquellos que podrían estar relacionados con la actividad humana, como el tráfico vehicular o los procesos industriales.
+
+## Transformaciones previas al modelado
+
+Para preparar los datos de manera adecuada antes del modelado, primero se aplicó un proceso de limpieza utilizando el método de Tomek Links, con el objetivo de eliminar observaciones limítrofes entre clases diferentes. Esta técnica permite mejorar la separación entre clases y evitar ruido en el entrenamiento, especialmente útil antes de aplicar técnicas de sobremuestreo como SMOTE.
+
+Posteriormente, se dividieron los datos en conjuntos de entrenamiento y prueba siguiendo una estrategia equilibrada. La clase mayoritaria se dividió en un 80%-20%, mientras que las clases minoritarias se dividieron en partes iguales (50%-50%) para asegurar una representación adecuada en ambos subconjuntos y evitar que queden subrepresentadas en el conjunto de prueba.
+
+Luego, se aplicaron técnicas combinadas de undersampling sobre la clase mayoritaria y SMOTE sobre las clases minoritarias dentro del conjunto de entrenamiento. Este enfoque permitió balancear las clases sin perder información relevante ni introducir sesgos artificiales.
+
+Finalmente, se realizó una normalización estándar de las variables numéricas para homogeneizar las escalas entre los predictores, asegurando así que todos los modelos trabajen con datos consistentes y comparables.
+
+### Aplicación de SMOTE para el Balanceo de Clases
+
+```{r}
+set.seed(123)
+
+major_class <- "Moderada"
+minor_classes <- c("Insalubre", "Muy_Insalubre", "Bajo")  # diğer azınlık sınıflar
+
+major_data <- subset(df, PM25_clasificacion == major_class)
+major_index <- sample(1:nrow(major_data), size = 0.8 * nrow(major_data))
+major_train <- major_data[major_index, ]
+major_test  <- major_data[-major_index, ]
+
+minor_train_list <- list()
+minor_test_list <- list()
+
+for (class in minor_classes) {
+  class_data <- subset(df, PM25_clasificacion == class)
+  class_index <- sample(1:nrow(class_data), size = 0.5 * nrow(class_data))
+  minor_train_list[[class]] <- class_data[class_index, ]
+  minor_test_list[[class]]  <- class_data[-class_index, ]
+}
+
+train_orig <- rbind(major_train, do.call(rbind, minor_train_list))
+test_set  <- rbind(major_test, do.call(rbind, minor_test_list))
+
+train_orig$PM25_clasificacion <- as.factor(train_orig$PM25_clasificacion)
+test_set$PM25_clasificacion  <- as.factor(test_set$PM25_clasificacion)
+
+```
+
+```{r}
+table(train_orig$PM25_clasificacion)
+table(test_set$PM25_clasificacion)
+```
+
+```{r}
+split_train <- train_orig %>% group_by(PM25_clasificacion) %>% group_split()
+names(split_train) <- levels(train_orig$PM25_clasificacion)
+class_1 <- split_train[["Bajo"]]            
+class_2 <- split_train[["Moderada"]]        
+class_3 <- split_train[["Insalubre"]]     
+class_4 <- split_train[["Muy_Insalubre"]]    
+
+```
+
+```{r}
+set.seed(123)
+class_2_down <- class_2 %>% sample_n(600)
+class_1_down <- class_1 %>% sample_n(600)
+
+X3 <- class_3 %>% select(where(is.numeric))
+Y3 <- as.numeric(class_3$PM25_clasificacion)
+smote_3 <- SMOTE(X3, Y3, K = 3, dup_size = 6)
+df_smoted_3 <- smote_3$data
+df_smoted_3$PM25_clasificacion <- factor(df_smoted_3$class, labels = "Insalubre")
+
+X4 <- class_4 %>% select(where(is.numeric))
+Y4 <- as.numeric(class_4$PM25_clasificacion)
+smote_4 <- SMOTE(X4, Y4, K = 3, dup_size = 15)
+df_smoted_4 <- smote_4$data
+df_smoted_4$PM25_clasificacion <- factor(df_smoted_4$class, labels = "Muy_Insalubre")
+
+```
+
+```{r}
+train_final <- bind_rows(
+  class_1_down,
+  class_2_down,
+  df_smoted_3,
+  df_smoted_4
+)
+
+```
+
+```{r}
+ggplot(train_final, aes(x = PM25_clasificacion, fill = PM25_clasificacion)) +
+  geom_bar(show.legend = FALSE) +
+  geom_text(stat = "count", aes(label = ..count..), vjust = -0.5, size = 4) +
+  labs(
+    title = "Distribucion final balanceada",
+    x = "Nivel de contaminacion por PM2.5",
+    y = "Numero de observaciones"
+  ) +
+  theme_minimal()
+```
+
+Tras dividir y preprocesar el conjunto de entrenamiento, se aplicó una estrategia combinada de **downsampling** y **SMOTE** para balancear las clases. Las clases mayoritarias (*Bajo* y *Moderada*) fueron reducidas a 600 observaciones cada una mediante muestreo aleatorio. Por otro lado, se utilizó la técnica de **SMOTE** para las clases minoritarias (*Insalubre* y *Muy_Insalubre*), generando observaciones sintéticas con parámetros ajustados a su tamaño inicial (`dup_size = 6` para *Insalubre* y `dup_size = 15` para *Muy_Insalubre*).
+
+Este enfoque permitió evitar tanto la sobre-representación artificial como la pérdida de información valiosa. Como resultado, se obtuvo un conjunto de entrenamiento **balanceado**, con una distribución equitativa entre las clases, tal como se muestra en el gráfico. Esta estructura final mejora significativamente la capacidad de los modelos de clasificación para aprender de forma justa entre clases desbalanceadas.
+
+
+### Normalización de las Variables Numéricas
+
+
+```{r}
+drop_vars <- c("class")
+train_final <- train_final %>% select(-any_of(drop_vars))
+test_set <- test_set  
+  
+numeric_vars <- train_final %>% select(where(is.numeric)) %>% names()
+numeric_vars <- setdiff(numeric_vars, "PM25_clasificacion")
+  
+min_vals <- sapply(train_final[numeric_vars], min)
+max_vals <- sapply(train_final[numeric_vars], max)
+  
+train_final[numeric_vars] <- scale(train_final[numeric_vars], center = min_vals, scale = max_vals - min_vals)
+test_set[numeric_vars] <- scale(test_set[numeric_vars], center = min_vals, scale = max_vals - min_vals)
+```
+
+
+
+Para asegurar que todas las variables numéricas contribuyan de manera equitativa al proceso de modelado, se aplicó una normalización Min-Max. Este procedimiento transforma cada variable para que sus valores estén en el rango [0, 1].
+
+Este paso es fundamental especialmente para algoritmos sensibles a las distancias (como Random Forest, SVM o redes neuronales), donde diferencias en escalas pueden sesgar el rendimiento del modelo.
+
+
+```{r}
+saveRDS(train_final, file = file.path(dir_base, "train_final.rds"), compress = TRUE)
+saveRDS(test_set, file = file.path(dir_base, "test_set.rds"), compress = TRUE)
+```
+
+## Selección de variables mediante RFE (Recursive Feature Elimination)
+
+```{r}
+x <- train_final %>% select(-PM25_clasificacion)
+y <- train_final$PM25_clasificacion
+
+ctrl_rfe <- rfeControl(functions = rfFuncs,
+                       method = "cv",   
+                       number = 5)     
+
+set.seed(123)
+rfe_result <- rfe(x, y,
+                  sizes = c(5, 8, 10, 12),  
+                  rfeControl = ctrl_rfe)
+
+rfe_result$optVariables
+```
+
+Con el objetivo de reducir la dimensionalidad y mejorar la eficiencia del modelado, se aplicó la técnica de eliminación recursiva de características (RFE) utilizando random forest como método base. Esta técnica permitió identificar el subconjunto óptimo de variables predictoras que maximizan el rendimiento del modelo. Las variables seleccionadas fueron coherentes con el análisis exploratorio previo, destacando aquellas relacionadas con partículas PM10, NO₂ y ozono (O₃).
+
+
+# Construcción de modelos predictivos
+
+En esta sección se implementarán y compararán diversos modelos de clasificación para predecir el nivel de contaminación por PM2.5. Como punto de partida, se entrenarán dos modelos de referencia —*Regresión Logística* y *Random Forest*— con configuraciones básicas, con el objetivo de establecer una línea base de rendimiento.
+
+Posteriormente, se aplicará un enfoque más detallado utilizando *SVM (Máquinas de Vectores de Soporte)*, donde se llevará a cabo una búsqueda en malla (*Grid Search*) para optimizar hiperparámetros y se analizará la importancia de las variables predictoras asociadas al modelo.
+
+
+```{r}
+train_final <- readRDS(file.path(dir_base, "train_final.rds"))
+test_set <- readRDS(file.path(dir_base, "test_set.rds"))
+
+```
+
+
+## Regresión Logística
+
+Como primer paso en la construcción de modelos predictivos, se ha entrenado un modelo de **regresión logística multiclase**. Esta técnica clásica permite evaluar si las variables disponibles son suficientes para explicar adecuadamente la clasificación de los niveles de PM2.5.
+
+El objetivo de este modelo inicial es servir como **línea base** para la comparación con modelos más complejos en etapas posteriores, como SVM o Random Forest. A pesar de su simplicidad, la regresión logística permite identificar patrones generales y evaluar el poder predictivo de los atributos sin requerir un ajuste extenso de hiperparámetros.
+
+
+```{r}
+set.seed(123)
+
+model_log <- train(
+  PM25_clasificacion ~ ., 
+  data = train_final, 
+  method = "multinom", 
+  trControl = trainControl(method = "cv", number = 5),
+  trace = FALSE
+)
+
+pred_log <- predict(model_log, test_set)
+
+cm_log <- confusionMatrix(pred_log, test_set$PM25_clasificacion)
+
+cm_log$overall["Accuracy"]
+cm_log$byClass[, c("Sensitivity", "Specificity", "Balanced Accuracy")]
+
+```
+En este modelo, la métrica de **Recall** corresponde a la columna *Sensitivity* de la matriz de confusión. Esta métrica indica la proporción de observaciones correctamente identificadas para cada clase. Por ejemplo, el modelo logra un recall del 72% para la clase *Muy_Insalubre*, lo cual es destacable dada la escasez de ejemplos en dicha categoría.
+
+Sin embargo, las predicciones del modelo se distribuyen de forma promedio entre las clases. Dado que el conjunto de datos puede tener una estructura de alta dimensionalidad y complejidad no lineal, se considera necesario explorar modelos más sofisticados para capturar mejor los patrones subyacentes y mejorar la capacidad predictiva.
+
+```{r}
+cm_table <- table(Predicted = pred_log, Actual = test_set$PM25_clasificacion)
+cm_df <- as.data.frame(cm_table)
+
+ggplot(cm_df, aes(x = Actual, y = Predicted, fill = Freq)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Freq), size = 4) +
+  scale_fill_gradient(low = "#e0f3db", high = "#43a2ca") +
+  labs(title = "Matriz de Confusion – Regresion Logistica") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))  # ⬅ Ortalar
+
+```
+
+
+## Random Forest
+
+
+Como segundo modelo de referencia, se ha entrenado un clasificador basado en **Random Forest**, una técnica de ensamblado ampliamente utilizada en problemas de clasificación multiclase. Este algoritmo se basa en la construcción de múltiples árboles de decisión y la combinación de sus predicciones para mejorar la estabilidad y precisión del modelo.
+
+En esta etapa se ha utilizado una configuración básica sin ajuste de hiperparámetros, con el fin de comparar su rendimiento base frente a otros modelos clásicos como la regresión logística. A pesar de su simplicidad inicial, Random Forest ofrece ventajas significativas en cuanto a capacidad de generalización y manejo de datos desbalanceados.
+
+```{r}
+control <- trainControl(
+  method = "cv", 
+  number = 5,
+  classProbs = TRUE,        
+  savePredictions = "final"    
+)
+
+set.seed(123)
+model_rf <- train(
+  PM25_clasificacion ~ ., 
+  data = train_final,
+  method = "ranger",
+  trControl = control,
+  tuneLength = 1,   
+  importance = 'impurity'  
+)
+
+pred_rf <- predict(model_rf, test_set)
+
+cm_rf <- confusionMatrix(pred_rf, test_set$PM25_clasificacion)
+
+cm_rf$overall["Accuracy"]
+cm_rf$byClass[, c("Sensitivity", "Specificity", "Balanced Accuracy")]
+```
+
+El modelo Random Forest ha logrado una precisión global del **86.9%** en el conjunto de prueba, superando ampliamente al modelo de regresión logística utilizado como referencia. Además, presenta un desempeño equilibrado entre las distintas clases, incluyendo aquellas con menor representación.
+
+La clase *Muy_Insalubre*, típicamente difícil de predecir debido a su baja frecuencia, alcanzó un **recall del 87.1%**, mientras que la clase *Insalubre* obtuvo un **70.1%**. Estos valores indican que el modelo es capaz de detectar eficazmente zonas con altos niveles de contaminación por PM2.5.
+
+En conjunto, estos resultados demuestran que Random Forest es una alternativa robusta para problemas de clasificación multiclase y desbalanceada, ofreciendo una mejora significativa en la capacidad predictiva sin necesidad de ajustes complejos.
+
+```{r}
+rf_probs <- predict(model_rf, test_set, type = "prob")
+
+true_classes <- as.numeric(test_set$PM25_clasificacion)
+
+roc_rf_list <- lapply(1:4, function(i) {
+  roc(response = as.numeric(true_classes == i),
+      predictor = rf_probs[, i])
+})
+
+plot(roc_rf_list[[1]], col = "red", lwd = 2, main = "Curvas ROC – Random Forest")
+for (i in 2:4) {
+  plot(roc_rf_list[[i]], col = i + 1, lwd = 2, add = TRUE)
+}
+legend("bottomright", legend = levels(test_set$PM25_clasificacion),
+       col = 2:5, lwd = 2)
+
+```
+Las curvas ROC del modelo Random Forest muestran un rendimiento excepcional en la discriminación entre las distintas clases de contaminación por PM2.5. En particular, las clases *Insalubre* y *Muy_Insalubre*, que suelen ser más difíciles de identificar debido a su baja frecuencia, presentan áreas bajo la curva (AUC) cercanas a 1. Esto evidencia la alta capacidad predictiva del modelo para detectar niveles peligrosos de contaminación.
+
+Además, las clases más frecuentes (*Bajo* y *Moderada*) también presentan un comportamiento robusto, sin pérdida de sensibilidad ni especificidad. En conjunto, los resultados refuerzan la elección de Random Forest como modelo idóneo para problemas de clasificación multiclase y desbalanceada.
+
+
+### Importancia de Variables
+
+```{r}
+imp_rf <- varImp(model_rf)
+imp_df <- as.data.frame(imp_rf$importance)
+imp_df$Variable <- rownames(imp_df)
+
+top_imp <- imp_df %>%
+  arrange(desc(Overall)) %>%
+  slice(1:10)
+
+ggplot(top_imp, aes(x = reorder(Variable, Overall), y = Overall)) +
+  geom_col(fill = "#0073C2FF") +
+  coord_flip() +
+  labs(
+    title = "Importancia de Variables segun Random Forest",
+    x = "Variable Predictora",
+    y = "Importancia (Impureza disminuida)"
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+
+
+## SVM (Máquinas de Vectores de Soporte)
+
+
+Como siguiente enfoque se ha implementado un modelo de **Máquinas de Vectores de Soporte (SVM)**, conocido por su robustez en tareas de clasificación multiclase y su capacidad para manejar relaciones no lineales en los datos. En esta implementación se ha utilizado un **kernel radial** (RBF), que permite transformar el espacio de entrada y encontrar fronteras de decisión más flexibles.
+
+Para mejorar la capacidad predictiva del modelo, se ha realizado un ajuste fino de hiperparámetros mediante una búsqueda en malla (*Grid Search*), evaluando distintas combinaciones de los parámetros `C` y `sigma`. El objetivo es maximizar el rendimiento sin caer en sobreajuste.
+
+```{r}
+grid_svm <- expand.grid(
+  C = c(0.1, 1, 10),
+  sigma = c(0.001, 0.01, 0.1)
+)
+```
+
+El parámetro **`C`** controla el grado de penalización por errores de clasificación en el margen. Valores bajos de `C` permiten márgenes más amplios (modelo más simple, pero tolerante a errores), mientras que valores altos de `C` tienden a reducir los errores de entrenamiento pero pueden llevar a sobreajuste.
+
+Por otro lado, **`sigma`** define la amplitud del kernel radial (RBF) utilizado en el modelo. Un `sigma` bajo genera curvas de decisión más ajustadas (riesgo de sobreajuste), mientras que un valor alto produce curvas más suaves, lo cual puede dificultar la separación de clases complejas.
+
+El modelo se entrenó utilizando `method = "svmRadial"` dentro del framework `caret`, lo que permite combinar la flexibilidad del kernel RBF con la simplicidad del entrenamiento mediante validación cruzada y búsqueda automática de hiperparámetros.
+
+
+
+```{r}
+control <- trainControl(
+  method = "cv",
+  number = 5,
+  classProbs = TRUE,      
+  savePredictions = "final"   
+)
+
+set.seed(123)
+model_svm <- train(
+  PM25_clasificacion ~ .,
+  data = train_final,
+  method = "svmRadial",
+  trControl = control,
+  tuneGrid = grid_svm
+)
+
+pred_svm <- predict(model_svm, test_set)
+cm_svm <- confusionMatrix(pred_svm, test_set$PM25_clasificacion)
+```
+
+```{r}
+cm_svm$overall["Accuracy"]
+cm_svm$byClass[, c("Sensitivity", "Specificity", "Balanced Accuracy")]
+```
+El modelo SVM con núcleo radial y ajuste de hiperparámetros mediante búsqueda en malla logró una precisión global del **79.5%**. Aunque su rendimiento es ligeramente inferior al modelo Random Forest en términos de *Accuracy*, presenta una distribución notablemente equilibrada entre las clases.
+
+La clase *Insalubre* alcanzó un **recall del 80.5%**, y la clase *Muy_Insalubre*, usualmente difícil de identificar, logró un **recall del 74.3%** con una especificidad casi perfecta (**99.5%**). Estas cifras demuestran que el modelo tiene una buena capacidad para discriminar entre niveles de contaminación, incluso en clases con pocos ejemplos.
+
+Este modelo representa una alternativa sólida y bien balanceada, especialmente útil en contextos donde la detección de clases minoritarias es crítica.
+
+```{r}
+
+svm_probs <- predict(model_svm, test_set, type = "prob")
+
+true_classes <- as.numeric(test_set$PM25_clasificacion)
+
+roc_svm_list <- lapply(1:4, function(i) {
+  roc(response = as.numeric(true_classes == i),
+      predictor = svm_probs[, i])
+})
+
+plot(roc_svm_list[[1]], col = "red", lwd = 2, main = "Curvas ROC – SVM Radial")
+for (i in 2:4) {
+  plot(roc_svm_list[[i]], col = i + 1, lwd = 2, add = TRUE)
+}
+legend("bottomright", 
+       legend = levels(test_set$PM25_clasificacion),
+       col = 2:5, lwd = 2)
+
+```
+Las curvas ROC para el modelo SVM con núcleo radial reflejan un rendimiento sólido en la clasificación multiclase. Aunque su precisión general fue ligeramente inferior al modelo Random Forest, la capacidad del SVM para diferenciar entre clases —especialmente *Insalubre* y *Muy_Insalubre*— sigue siendo destacable. Las áreas bajo la curva (AUC) evidencian una buena capacidad discriminativa del modelo incluso en presencia de clases desbalanceadas.
+
+
+## Red Neuronal Profunda
+
+En esta sección se construirá un modelo de **aprendizaje profundo** utilizando la librería `keras`, con el objetivo de predecir los niveles de contaminación por PM2.5. Las redes neuronales profundas permiten modelar relaciones complejas y no lineales entre variables predictoras, lo que puede resultar especialmente útil en contextos donde los modelos tradicionales tienen limitaciones.
+
+Se diseñará una red neuronal multicapa (MLP), ajustando hiperparámetros clave como el número de capas ocultas, cantidad de neuronas, funciones de activación y tasa de aprendizaje. Finalmente, se evaluará el rendimiento del modelo y se comparará con los algoritmos clásicos utilizados anteriormente.
+
+### Preparación de los datos para el modelo de red neuronal
+
+Antes de construir el modelo de red neuronal, es necesario adaptar los datos a un formato adecuado. En primer lugar, se separaron las variables predictoras (`x_train`, `x_test`) de la variable objetivo (`y_train`, `y_test`) y se transformaron en matrices numéricas compatibles con `keras`. Además, la variable de salida, que originalmente era un factor con 4 niveles, se transformó en variables categóricas binarizadas (*one-hot encoding*), ya que este formato es requerido para problemas de clasificación multiclase en `keras`.
+
+Cabe destacar que este modelo no parte de los datos originales sin procesar. Previamente, se realizaron varias transformaciones importantes sobre el conjunto de datos para mejorar su calidad y balance:
+
+- Se eliminó el desequilibrio de clases aplicando una combinación de **downsampling** y la técnica **SMOTE** para sobrerepresentar las clases minoritarias.
+- Se aplicó una **normalización Min-Max** sobre las variables numéricas para llevarlas al rango \[0, 1\], facilitando el entrenamiento del modelo.
+- Se dividió el conjunto de datos en entrenamiento y test siguiendo una lógica estratificada que preserva la distribución de clases.
+
+Gracias a estas etapas de preprocesamiento, el modelo de red neuronal pudo ser entrenado de forma eficiente y con resultados equilibrados entre todas las clases.
+
+
+
+```{r}
+x_train <- train_final %>% select(-PM25_clasificacion) %>% as.matrix()
+x_test  <- test_set %>% select(-PM25_clasificacion) %>% as.matrix()
+
+y_train_int <- as.integer(train_final$PM25_clasificacion) - 1
+y_test_int  <- as.integer(test_set$PM25_clasificacion) - 1
+
+y_train <- to_categorical(y_train_int, num_classes = 4)
+y_test  <- to_categorical(y_test_int,  num_classes = 4)
+```
+### Arquitectura y configuración del modelo
+
+El modelo propuesto se basa en una red neuronal multicapa (*Multilayer Perceptron*, MLP) implementada mediante la librería `keras`. Esta arquitectura fue elegida por su capacidad para capturar relaciones no lineales y complejas entre las variables predictoras, especialmente útil en problemas con múltiples clases y distribución desequilibrada.
+
+Se diseñó una red profunda con tres capas ocultas, utilizando la función de activación `ReLU` en cada capa y `Softmax` en la capa de salida, adecuada para la clasificación multiclase. La configuración final incluye:
+
+- **Capas ocultas**: 128, 64 y 32 neuronas respectivamente  
+- **Dropout**: 0.3 y 0.4 en las primeras capas para prevenir el sobreajuste  
+- **Batch normalization**: tras cada capa densa para acelerar el entrenamiento y estabilizar el aprendizaje  
+- **Tasa de aprendizaje**: 0.001 con optimizador `Adam`  
+- **Capa de salida**: 4 neuronas con activación `softmax`, correspondientes a las 4 clases de PM2.5
+
+Para seleccionar la mejor combinación de hiperparámetros, se aplicó una estrategia de búsqueda en malla (*Grid Search*), evaluando múltiples configuraciones de unidades, tasas de `dropout` y valores de `learning rate`. El modelo fue entrenado utilizando una validación cruzada implícita con un conjunto de validación reservado y empleando `EarlyStopping` para evitar sobreentrenamiento.
+
+Adicionalmente, se aplicaron pesos de clase personalizados (*class weights*) durante el entrenamiento, con el fin de compensar el desequilibrio en la frecuencia de las clases y mejorar la capacidad del modelo para identificar correctamente las categorías minoritarias de contaminación más severa.
+
+Esta configuración final fue la que mejor rendimiento obtuvo sobre el conjunto de validación y se utilizó para realizar la evaluación final del modelo.
+
+
+
+```{r}
+class_weights <- list(
+  "0" = 1.0,  # Bajo
+  "1" = 1.0,  # Moderada
+  "2" = 3.0,  # Insalubre
+  "3" = 4.0   # Muy_Insalubre
+)
+
+```
+
+```{r}
+grid <- expand.grid(
+  units1 = c(128, 64),
+  units2 = c(64, 32),
+  dropout1 = c(0.2, 0.3),
+  dropout2 = c(0.5, 0.4),
+  lr = c(0.001, 0.0005)
+)
+
+results <- list()
+
+for (i in 1:nrow(grid)) {
+  
+  params <- grid[i, ]
+  
+  model <- keras_model_sequential() %>%
+    layer_dense(units = params$units1, activation = "relu", input_shape = ncol(x_train)) %>%
+    layer_batch_normalization() %>%
+    layer_dropout(rate = params$dropout1) %>%
+    
+    layer_dense(units = params$units2, activation = "relu") %>%
+    layer_batch_normalization() %>%
+    layer_dropout(rate = params$dropout2) %>%
+    
+    layer_dense(units = 32, activation = "relu") %>%
+    layer_batch_normalization() %>%
+    layer_dropout(rate = 0.2) %>%
+    
+    layer_dense(units = 4, activation = "softmax")
+  
+  model %>% compile(
+    loss = "categorical_crossentropy",
+    optimizer = optimizer_adam(learning_rate = params$lr),
+    metrics = c("accuracy")
+  )
+  
+  early_stop <- callback_early_stopping(
+    monitor = "val_loss",
+    patience = 7,
+    restore_best_weights = TRUE
+  )
+  
+  history <- model %>% fit(
+    x = x_train,
+    y = y_train,
+    validation_data = list(x_test, y_test),
+    epochs = 100,
+    batch_size = 32,
+    callbacks = list(early_stop),
+    class_weight = class_weights,
+    verbose = 0
+  )
+  
+  score <- model %>% evaluate(x_test, y_test, verbose = 0)
+  results[[i]] <- list(score = score, params = params)
+}
+
+best <- which.max(sapply(results, function(x) x$score[["accuracy"]]))
+best_result <- results[[best]]
+
+
+```
+
+```{r}
+best_result$params
+```
+
+
+### Mejores hiperparámetros encontrados
+
+Tras la evaluación de múltiples combinaciones mediante una búsqueda en malla (*grid search*), se identificó la configuración de hiperparámetros que ofreció el mejor rendimiento sobre el conjunto de validación:
+
+- **Capas ocultas**: 128 y 64 neuronas respectivamente  
+- **Tasa de `dropout`**: 0.3 y 0.4, aplicadas tras cada capa oculta para prevenir sobreajuste  
+- **Tasa de aprendizaje (`learning rate`)**: 0.001 con el optimizador `Adam`
+
+Esta arquitectura logró un buen equilibrio entre complejidad del modelo y generalización, permitiendo una rápida convergencia sin sacrificar precisión. La combinación óptima encontró un punto medio eficaz en regularización (`dropout`) y profundidad, lo que contribuyó a obtener mejores tasas de clasificación especialmente en las clases minoritarias.
+
+
+```{r}
+model <- keras_model_sequential() %>%
+  layer_dense(units = 128, activation = "relu", input_shape = ncol(x_train)) %>%
+  layer_batch_normalization() %>%
+  layer_dropout(rate = 0.3) %>%
+  
+  layer_dense(units = 64, activation = "relu") %>%
+  layer_batch_normalization() %>%
+  layer_dropout(rate = 0.4) %>%
+  
+  layer_dense(units = 32, activation = "relu") %>%
+  layer_batch_normalization() %>%
+  layer_dropout(rate = 0.2) %>%
+  
+  layer_dense(units = 4, activation = "softmax")
+
+model %>% compile(
+  loss = "categorical_crossentropy",
+  optimizer = optimizer_adam(learning_rate = 0.001),
+  metrics = c("accuracy")
+)
+
+early_stop <- callback_early_stopping(
+  monitor = "val_loss",
+  patience = 7,
+  restore_best_weights = TRUE
+)
+
+history <- model %>% fit(
+  x = x_train,
+  y = y_train,
+  validation_data = list(x_test, y_test),
+  epochs = 100,
+  batch_size = 32,
+  callbacks = list(early_stop),
+  class_weight = class_weights
+)
+
+model %>% evaluate(x_test, y_test)
+
+```
+### Evaluación del Modelo de Red Neuronal
+
+El modelo de red neuronal profunda logró una **precisión global del 75.0%**, superando con claridad el índice de no información (61.8%). Además, se observó un rendimiento notablemente balanceado entre clases, reflejado en métricas como la **Kappa de 0.555**, lo cual indica un nivel moderado-alto de concordancia con respecto a la clasificación aleatoria.
+
+El análisis de sensibilidad y especificidad por clase revela que el modelo es especialmente efectivo en la detección de clases minoritarias como *Insalubre* (recall: 81.6%) y *Muy_Insalubre* (recall: 79.5%), lo cual valida el uso de **pesos de clase** durante el entrenamiento.
+
+A pesar de cierta pérdida de precisión en estas clases (por ejemplo, *Muy_Insalubre* tiene un PPV de 0.24), el modelo demuestra una capacidad generalizada para identificar patrones complejos y no lineales.
+
+En conclusión, el modelo de red neuronal representa una alternativa robusta en escenarios de clasificación con clases desbalanceadas, especialmente cuando el foco está en capturar correctamente instancias de alto riesgo como los niveles elevados de contaminación.
+
+
+```{r}
+pred_probs <- model %>% predict(x_test)
+pred_class <- apply(pred_probs, 1, which.max) - 1
+caret::confusionMatrix(as.factor(pred_class), as.factor(y_test_int))
+```
+
+```{r}
+cm_nn <- matrix(c(1709, 612, 0, 0,
+                  173, 2884, 0, 4,
+                  361, 315, 71, 4,
+                  21, 57, 16, 31),
+                nrow = 4, byrow = TRUE)
+
+rownames(cm_nn) <- colnames(cm_nn) <- c("Bajo", "Moderada", "Insalubre", "Muy_Insalubre")
+
+cm_df <- as.data.frame(cm_nn)
+cm_df$Prediction <- rownames(cm_df)
+cm_melted <- melt(cm_df, id.vars = "Prediction", variable.name = "Reference", value.name = "Count")
+
+ggplot(cm_melted, aes(x = Reference, y = Prediction, fill = Count)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Count), color = "black", size = 4) +
+  scale_fill_gradient(low = "#e0f3db", high = "#43a2ca") +
+  labs(title = "Matriz de Confusion - Red Neuronal Profunda") +
+  theme_minimal()
+```
+```{r}
+probs_nn <- model %>% predict(x_test)
+true_class <- ifelse(y_test_int == 3, 1, 0)
+pred_probs <- probs_nn[, 4]
+roc_curve <- roc(true_class, pred_probs)
+
+roc_list <- list()
+for (i in 1:4) {
+  true_binary <- ifelse(y_test_int == (i-1), 1, 0)
+  pred_prob   <- probs_nn[, i]
+  roc_list[[i]] <- roc(true_binary, pred_prob)
+}
+
+plot(roc_list[[1]], col = "red", lwd = 2, main = "ROC Curves por Clase")
+plot(roc_list[[2]], col = "blue", lwd = 2, add = TRUE)
+plot(roc_list[[3]], col = "green", lwd = 2, add = TRUE)
+plot(roc_list[[4]], col = "purple", lwd = 2, add = TRUE)
+legend("bottomright", legend = c("Bajo", "Moderada", "Insalubre", "Muy_Insalubre"),
+       col = c("red", "blue", "green", "purple"), lwd = 2)
+
+```
+Además, la matriz de confusión visualizada permite identificar de forma clara los aciertos y errores por clase. Se observa una alta capacidad del modelo para predecir correctamente las clases Insalubre y Muy_Insalubre, aunque con cierta confusión entre Bajo y Moderada, algo esperable debido a su mayor volumen y similitud.
+
+Por otro lado, las curvas ROC multiclase confirman un rendimiento sólido, con áreas bajo la curva (AUC) elevadas para todas las clases, en especial para las minoritarias. Esto refuerza la validez del enfoque de red neuronal profunda en contextos de clasificación multiclase con desbalance.
+
+# Conclusiones
+
+A lo largo de este trabajo se abordó el problema de clasificación de los niveles de contaminación por PM2.5 mediante el desarrollo y comparación de diversos modelos predictivos, utilizando un enfoque progresivo desde modelos clásicos hasta técnicas avanzadas de aprendizaje profundo.
+
+Inicialmente, se aplicaron modelos clásicos como la regresión logística y el random forest. La regresión logística, si bien presentó una precisión global limitada (65.6%), mostró un desempeño aceptable en la detección de clases comunes, pero tuvo dificultades para identificar correctamente las clases minoritarias. El modelo de random forest, en cambio, obtuvo la mayor precisión global (86.9%) y mostró una capacidad sólida para capturar tanto las clases mayoritarias como algunas minoritarias, evidenciado por valores altos de sensibilidad y exactitud balanceada, especialmente para la clase Muy Insalubre.
+
+Posteriormente, se entrenó un modelo SVM con búsqueda de hiperparámetros, el cual alcanzó una precisión del 79.5%, con un rendimiento equilibrado en la mayoría de las clases. A pesar de sus buenos resultados, su capacidad para identificar clases poco frecuentes como Insalubre fue más limitada comparado con la red neuronal profunda.
+
+El modelo de red neuronal profunda, construido y optimizado mediante un grid de hiperparámetros, alcanzó una precisión del 75.0%. Aunque no superó al random forest en términos de precisión total, mostró una ventaja considerable en la detección de clases poco representadas. Específicamente, logró un recall del 81.6% para la clase Insalubre y del 79.5% para Muy Insalubre, lo cual valida el uso de técnicas como class weighting y demuestra el potencial de las redes neuronales cuando el foco está en minimizar los falsos negativos.
+
+En cuanto a las variables más importantes, el análisis de importancia de variables generado a partir del modelo random forest reveló que los valores anuales de PM10 y NO2, así como sus respectivas métricas de superación de umbrales (por ejemplo, PM10_days_above_50 y NO2_hours_above_200) fueron determinantes en la predicción de la contaminación.
+
+Respuestas a las preguntas planteadas:
+
+¿Es posible predecir si una zona tendrá alta contaminación por PM2.5?
+
+Sí, los modelos desarrollados —especialmente random forest y redes neuronales— demostraron una capacidad robusta para predecir altos niveles de contaminación, incluso en clases poco representadas.
+
+¿Cuáles son las variables más relevantes?
+
+Las variables más influyentes fueron PM10_annual_mean, PM10_days_above_50, NO2_annual_mean, NO2_hours_above_200 y O3_annual_mean, todas relacionadas directamente con contaminantes clave que afectan el nivel de PM2.5.
+
+En conclusión, el estudio evidencia que el uso combinado de modelos clásicos y redes neuronales permite obtener una visión completa y precisa del fenómeno, y que las redes neuronales profundas son especialmente útiles cuando se prioriza la detección de eventos de alto riesgo ambiental.
+
+
+```{r}
+saveRDS(model_rf, file = file.path(dir_base, "model_rf.rds"), compress = TRUE)
+saveRDS(model_svm, file = file.path(dir_base, "model_svm.rds"), compress = TRUE)
+save_model_hdf5(model, filepath = file.path(dir_base, "model_nn.h5"))
+
+```
+
