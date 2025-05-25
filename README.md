@@ -21,14 +21,14 @@ This project focuses on classifying air pollution levels based on PM2.5 measurem
 - Accuracy: ~75%
 - ROC AUC and Balanced Accuracy used for performance evaluation
 
-![Confusion Matrix NN](Confusion Matriz NN.jpeg)
-![ROC Curve NN](Roc Curve NN.jpeg)
+![Confusion Matrix NN](confusion_matrix_nn.jpeg)
+![ROC Curve NN](roc_curve_nn.jpeg)
 
 ### Random Forest
 - High AUC values across all classes
 - Strong performance, especially in minority classes
 
-![ROC Curve RF](Roc Curve RF.jpeg)
+![ROC Curve RF](roc_curve_rf.jpeg)
 ![Random Forest Scores](rf_results.jpeg)
 
 ---
