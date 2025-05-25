@@ -29,7 +29,7 @@ This project focuses on classifying air pollution levels based on PM2.5 measurem
 - Strong performance, especially in minority classes
 
 ![ROC Curve RF](Roc Curve RF.jpeg)
-![Random Forest Scores](Results Random Forest.jpeg)
+![Random Forest Scores](rf_results.jpeg)
 
 ---
 
